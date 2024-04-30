@@ -310,14 +310,12 @@ async fn server_loop(start_cmd: &StartCommand) -> Result<(), Box<dyn std::error:
                 if buf[n - 1] == 0x0d {
                     // Init string always turns echo off
                     if at_string.as_str().contains("E0") { // Init string
-                        println!("Init String");
                         if let Err(e) = mame.write_all(b"OK\x0d\x0a").await {
                             eprintln!("Can't talk to MAME: error={e}");
                             return;
                         }
                     // Dial setup string usually doesn't have a phone number or echo value.
                     } else if !at_string.contains("E0") && !at_string.contains("DT") && !at_string.contains("TD") { // Dial setup string
-                        println!("Dial setup string");
                         // OK
                         if let Err(e) = mame.write_all(b"\x0d\x0a0\x0d\x0a").await {
                             eprintln!("Can't talk to MAME: error={e}");
@@ -325,7 +323,6 @@ async fn server_loop(start_cmd: &StartCommand) -> Result<(), Box<dyn std::error:
                         }
                     // DT in the string means a dial command.
                     } else if at_string.contains("DT") { // Dial string
-                        println!("Dial string");
                         if let Err(e) = mame.write_all(b"0\x0d\x0a").await {
                             eprintln!("Can't talk to MAME: error={e}");
                             return;
@@ -333,7 +330,6 @@ async fn server_loop(start_cmd: &StartCommand) -> Result<(), Box<dyn std::error:
 
                     // ATD standalone is the request to go into data mode.
                     } else if at_string.contains("TD\x0d") { // ATD, go into data mode
-                        println!("DT");
                         if let Err(e) = mame.write_all(b"79\x0d\x0a67\x0d\x0a19\x0d\x0a").await {
                             eprintln!("Can't talk to MAME: error={e}");
                             return;
