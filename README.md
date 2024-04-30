@@ -13,7 +13,7 @@ cargo build
 For more information, you can read this guide: http://podsix.org/articles/pimodem/. This would replace the tcpser setup. Keep in mind that this program doesn't understand Telnet or IP232, so you might need to skip the xinet.d setup on that page. In place of the xinet.d server you can use socat:
 
 ```sh
-socat tcp-l:2323,fork,reuseaddr exec:'/usr/sbin/pppd notty',pty,rawer,nonblock=1,iexten=0,b115200
+socat tcp-l:2323,fork,reuseaddr exec:'/usr/sbin/pppd notty noipv6',pty,rawer,nonblock=1,iexten=0,b115200
 ```
 
 Basic usage can be found by running `./touchppp --help`. Here's an example command line that will listen on 127.0.0.1:1122 and try to reach out to a server providing ppp at 127.0.0.1:2323.
