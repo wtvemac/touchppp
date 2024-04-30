@@ -3,8 +3,11 @@
 use std::env;
 use getopts::Options;
 use std::str;
+use std::io::ErrorKind::{ConnectionReset, ConnectionAborted};
+use futures::FutureExt;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::sync::broadcast;
 
 #[macro_use]
 extern crate counted_array;
@@ -124,6 +127,76 @@ fn parse_options() -> Result<StartCommand, Box<dyn std::error::Error>> {
     })
 }
 
+async fn copy_loop<R, W>(
+    read: &mut R,
+    write: &mut W,
+    mut abort: broadcast::Receiver<()>,
+) -> tokio::io::Result<usize>
+where
+    R: tokio::io::AsyncRead + Unpin,
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    let mut copied_bytes = 0;
+    let mut buf = [0u8; BUFFER_SIZE];
+    loop {
+        let bytes_found;
+        tokio::select! {
+            biased;
+
+            result = read.read(&mut buf) => {
+                bytes_found = result.or_else(|e| match e.kind() {
+                    ConnectionReset | ConnectionAborted => Ok(0),
+                    _ => Err(e)
+                })?;
+            },
+            _ = abort.recv() => {
+                break;
+            }
+        }
+
+        if bytes_found == 0 {
+            println!("COOL!\n");
+            break;
+        }
+
+        write.write_all(&buf[0..bytes_found]).await?;
+        copied_bytes += bytes_found;
+    }
+
+    Ok(copied_bytes)
+}
+
+async fn local_exec_loop(mame: &mut TcpStream, ppp: &mut TcpStream) -> Result<(usize, usize), Box<dyn std::error::Error>> {
+    let (mut mame_reader, mut mame_writer) = mame.split();
+    let (mut ppp_reader, mut ppp_writer) = ppp.split();
+
+    let (cancel, _) = broadcast::channel::<()>(1);
+
+    let (ppp_to_mame_copied_bytes, mame_to_ppp_copied_bytes) = tokio::join!{
+        copy_loop(&mut ppp_reader, &mut mame_writer, cancel.subscribe())
+            .then(|r| { let _ = cancel.send(()); async { r } }),
+        copy_loop(&mut mame_reader, &mut ppp_writer, cancel.subscribe())
+            .then(|r| { let _ = cancel.send(()); async { r } }),
+    };
+
+    Ok((mame_to_ppp_copied_bytes.unwrap(), ppp_to_mame_copied_bytes.unwrap()))
+}
+async fn remote_ppp_loop(mame: &mut TcpStream, ppp: &mut TcpStream) -> Result<(usize, usize), Box<dyn std::error::Error>> {
+    let (mut mame_reader, mut mame_writer) = mame.split();
+    let (mut ppp_reader, mut ppp_writer) = ppp.split();
+
+    let (cancel, _) = broadcast::channel::<()>(1);
+
+    let (ppp_to_mame_copied_bytes, mame_to_ppp_copied_bytes) = tokio::join!{
+        copy_loop(&mut ppp_reader, &mut mame_writer, cancel.subscribe())
+            .then(|r| { let _ = cancel.send(()); async { r } }),
+        copy_loop(&mut mame_reader, &mut ppp_writer, cancel.subscribe())
+            .then(|r| { let _ = cancel.send(()); async { r } }),
+    };
+
+    Ok((mame_to_ppp_copied_bytes.unwrap(), ppp_to_mame_copied_bytes.unwrap()))
+}
+
 //#[tokio::main(flavor = "multi_thread", worker_threads = 3)]
 #[tokio::main]
 async fn server_loop(start_cmd: &StartCommand) -> Result<(), Box<dyn std::error::Error>> {
@@ -161,7 +234,7 @@ async fn server_loop(start_cmd: &StartCommand) -> Result<(), Box<dyn std::error:
 
     println!("Listening on {listen_socket_address}.\n");
 
-    println!("You need to add '-spot:mdm null_modem -bitb socket.{listen_socket_address}' or '-spot:rs232 null_modem -bitb socket.{listen_socket_address}' to the MAME command line.\n");
+    println!("You need to add '-spot:mdm null_modem -bitb socket.{listen_socket_address}' (wtvemac/mame) or '-spot:rs232 null_modem -bitb socket.{listen_socket_address}' (FairPlay137/mame) to the MAME command line.\n");
 
     let mut comcnt = 0;
     loop {
@@ -233,24 +306,23 @@ async fn server_loop(start_cmd: &StartCommand) -> Result<(), Box<dyn std::error:
 
                         println!("CMD: {}", local_program_command);
 
-                        let mut ppp = match TcpStream::connect(&remote_socket_address).await {
-                            Ok(result) => result,
+                        let mut ppp: TcpStream = match TcpStream::connect(&remote_socket_address).await {
+                            Ok(r) => r,
                             Err(e) => {
                                 eprintln!("Couldn't touch PPP: error={e}");
                                 return;
                             }
                         };
 
-                        match tokio::io::copy_bidirectional(&mut mame, &mut ppp).await {
-                            Ok((n1, n2)) => {
-                                println!("Server sent {} bytes and received {} bytes", n1, n2);
-                            }
+                        let (mame_to_ppp_copied_bytes, ppp_to_mame_copied_bytes) = match remote_ppp_loop(&mut mame, &mut ppp).await {
+                            Ok(r) => r,
                             Err(e) => {
-                                println!("Server error: {}", e);
+                                eprintln!("Error in remote PPP loop: error={e}");
+                                return;
                             }
-                        }
+                        };
 
-                        println!("Looks like the MAME is done? Taking my hands off PPP.\n");
+                        println!("Looks like the MAME is done? Taking my hands off PPP. {mame_to_ppp_copied_bytes} bytes copied from MAME to PPP, {ppp_to_mame_copied_bytes} bytes copied from PPP to MAME\n");
 
                         comcnt = 0;
                     }

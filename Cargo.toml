@@ -7,9 +7,9 @@ edition = "2021"
 
 [dependencies]
 counted-array = "0.1.2"
+futures = "0.3.30"
 getopts = "0.2.21"
 tokio = { version = "1.37.0", features = ["full"] }
-
 
 [lints.rust]
 dead_code = "allow"
