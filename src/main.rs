@@ -6,8 +6,12 @@ use std::str;
 use std::io::ErrorKind::{ConnectionReset, ConnectionAborted};
 use futures::FutureExt;
 use tokio::net::{TcpListener, TcpStream};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader, BufWriter};
 use tokio::sync::broadcast;
+use tokio::process::Command;
+use std::process::Stdio;
+
+use std::{thread, time};
 
 #[macro_use]
 extern crate counted_array;
@@ -155,9 +159,11 @@ where
         }
 
         if bytes_found == 0 {
-            println!("COOL!\n");
             break;
         }
+
+        //thread::sleep(time::Duration::from_millis(10));
+        //println!("B:{:x?}", &buf[0..bytes_found]);
 
         write.write_all(&buf[0..bytes_found]).await?;
         copied_bytes += bytes_found;
@@ -166,9 +172,32 @@ where
     Ok(copied_bytes)
 }
 
-async fn local_exec_loop(mame: &mut TcpStream, ppp: &mut TcpStream) -> Result<(usize, usize), Box<dyn std::error::Error>> {
+async fn local_exec_loop(mame: &mut TcpStream, local_program_command: &String) -> Result<(usize, usize), Box<dyn std::error::Error>> {
     let (mut mame_reader, mut mame_writer) = mame.split();
-    let (mut ppp_reader, mut ppp_writer) = ppp.split();
+
+    let mut the_args = local_program_command.split(' '); 
+    let first: &str = the_args.next().unwrap();
+    let rest: Vec<&str> = the_args.collect::<Vec<&str>>();
+
+    println!("Got it? '{}'\n", first);
+    println!("Got it2? '{}'\n", local_program_command);
+
+    let mut ppp = match Command::new(first)
+        .args(rest)
+        .stdout(Stdio::piped())
+        .stdin(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn() {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("Unable to launch PPP! {e}");
+
+            return Ok((0, 0));
+        },
+    };
+
+    let mut ppp_reader = BufReader::new(ppp.stdout.take().expect("No PPP STDOUT?"));
+    let mut ppp_writer = BufWriter::new(ppp.stdin.take().expect("No PPP STDIN?"));
 
     let (cancel, _) = broadcast::channel::<()>(1);
 
@@ -181,7 +210,17 @@ async fn local_exec_loop(mame: &mut TcpStream, ppp: &mut TcpStream) -> Result<(u
 
     Ok((mame_to_ppp_copied_bytes.unwrap(), ppp_to_mame_copied_bytes.unwrap()))
 }
-async fn remote_ppp_loop(mame: &mut TcpStream, ppp: &mut TcpStream) -> Result<(usize, usize), Box<dyn std::error::Error>> {
+
+async fn remote_ppp_loop(mame: &mut TcpStream, remote_socket_address: &String) -> Result<(usize, usize), Box<dyn std::error::Error>> {
+    let mut ppp: TcpStream = match TcpStream::connect(remote_socket_address).await {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("Couldn't touch PPP: error={e}");
+
+            return Ok((0, 0));
+        }
+    };
+
     let (mut mame_reader, mut mame_writer) = mame.split();
     let (mut ppp_reader, mut ppp_writer) = ppp.split();
 
@@ -213,7 +252,7 @@ async fn server_loop(start_cmd: &StartCommand) -> Result<(), Box<dyn std::error:
     }
 
     let mut remote_socket_address = format!("{}:{}", DEFAULT_IP, 2323);
-    if start_cmd.params.opt_present("l") {
+    if start_cmd.params.opt_present("c") {
         remote_socket_address = start_cmd.params.opt_str("c")
             .expect("failed to resolve remote address");
 
@@ -229,8 +268,6 @@ async fn server_loop(start_cmd: &StartCommand) -> Result<(), Box<dyn std::error:
     }
 
     let listener = TcpListener::bind(&listen_socket_address).await?;
-
-    //a.contains("bc")
 
     println!("Listening on {listen_socket_address}.\n");
 
@@ -306,23 +343,24 @@ async fn server_loop(start_cmd: &StartCommand) -> Result<(), Box<dyn std::error:
 
                         println!("CMD: {}", local_program_command);
 
-                        let mut ppp: TcpStream = match TcpStream::connect(&remote_socket_address).await {
-                            Ok(r) => r,
+                        let mut ppp = match TcpStream::connect(&remote_socket_address).await {
+                            Ok(result) => result,
                             Err(e) => {
                                 eprintln!("Couldn't touch PPP: error={e}");
                                 return;
                             }
                         };
 
-                        let (mame_to_ppp_copied_bytes, ppp_to_mame_copied_bytes) = match remote_ppp_loop(&mut mame, &mut ppp).await {
-                            Ok(r) => r,
-                            Err(e) => {
-                                eprintln!("Error in remote PPP loop: error={e}");
-                                return;
+                        match tokio::io::copy_bidirectional(&mut mame, &mut ppp).await {
+                            Ok((n1, n2)) => {
+                                println!("Server sent {} bytes and received {} bytes", n1, n2);
                             }
-                        };
+                            Err(e) => {
+                                println!("Server error: {}", e);
+                            }
+                        }
 
-                        println!("Looks like the MAME is done? Taking my hands off PPP. {mame_to_ppp_copied_bytes} bytes copied from MAME to PPP, {ppp_to_mame_copied_bytes} bytes copied from PPP to MAME\n");
+                        println!("Looks like the MAME is done? Taking my hands off PPP.\n");
 
                         comcnt = 0;
                     }
