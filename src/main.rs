@@ -11,8 +11,6 @@ use tokio::sync::broadcast;
 use tokio::process::Command;
 use std::process::Stdio;
 
-use std::{thread, time};
-
 #[macro_use]
 extern crate counted_array;
 
@@ -273,7 +271,6 @@ async fn server_loop(start_cmd: &StartCommand) -> Result<(), Box<dyn std::error:
 
     println!("You need to add '-spot:mdm null_modem -bitb socket.{listen_socket_address}' (wtvemac/mame) or '-spot:rs232 null_modem -bitb socket.{listen_socket_address}' (FairPlay137/mame) to the MAME command line.\n");
 
-    let mut comcnt = 0;
     loop {
         let (mut mame, mame_socket_address) = listener.accept().await?;
 
@@ -286,8 +283,10 @@ async fn server_loop(start_cmd: &StartCommand) -> Result<(), Box<dyn std::error:
 
             println!("Looks like we got a wild MAME @ {mame_socket_address}");
 
+            let mut at_string: String = "".to_string();
+
             loop {
-                let _n: usize = match mame.read(&mut buf).await {
+                let n: usize = match mame.read(&mut buf).await {
                     Ok(n) if n == 0 => return,
                     Ok(n) => n,
                     Err(e) => {
@@ -296,74 +295,79 @@ async fn server_loop(start_cmd: &StartCommand) -> Result<(), Box<dyn std::error:
                     }
                 };
 
-                if buf[0] >= 0x0a && buf[0] < 0x80 && comcnt <= 3 {
-                    let s = match str::from_utf8(&buf) {
-                        Ok(v) => v,
-                        Err(_e) => {
-                            return;
-                        }
-                    };
+                if buf[0] >= 0x0a && buf[0] < 0x80 {
+                    let s = String::from_utf8_lossy(&buf[0..n]);
 
-                    let s2 = s.replace("\x0d", "\x0a");
-                    print!("{}", s2);
+                    at_string.push_str(&s);
+
+                    print!("{}", s.replace("\x0d", "\x0a"));
                 }
 
-                if buf[0] == 0x0d {
-                    comcnt += 1;
+                // 79: CARRIER 33600
+                // 67: COMPRESSION: V.42 bis
+                // 19: CONECTED 115200
 
-                    if comcnt == 1 { // Init string
+                if buf[n - 1] == 0x0d {
+                    // Init string always turns echo off
+                    if at_string.as_str().contains("E0") { // Init string
+                        println!("Init String");
                         if let Err(e) = mame.write_all(b"OK\x0d\x0a").await {
                             eprintln!("Can't talk to MAME: error={e}");
                             return;
                         }
-                    } else if comcnt == 2 { // Dial setup string
+                    // Dial setup string usually doesn't have a phone number or echo value.
+                    } else if !at_string.contains("E0") && !at_string.contains("DT") && !at_string.contains("TD") { // Dial setup string
+                        println!("Dial setup string");
                         // OK
                         if let Err(e) = mame.write_all(b"\x0d\x0a0\x0d\x0a").await {
                             eprintln!("Can't talk to MAME: error={e}");
                             return;
                         }
-                    } else if comcnt == 3 { // Dial string
-                        // CARRIER 33600
-                        // COMPRESSION: V.42 bis
-                        // CONECTED 115200
-                        if let Err(e) = mame.write_all(b"\x0d\x0a").await {
+                    // DT in the string means a dial command.
+                    } else if at_string.contains("DT") { // Dial string
+                        println!("Dial string");
+                        if let Err(e) = mame.write_all(b"0\x0d\x0a").await {
                             eprintln!("Can't talk to MAME: error={e}");
                             return;
                         }
-                    } else if comcnt == 4 { // ATD, go into data mode
-                        // CARRIER 33600
-                        // COMPRESSION: V.42 bis
-                        // CONECTED 115200
+
+                    // ATD standalone is the request to go into data mode.
+                    } else if at_string.contains("TD\x0d") { // ATD, go into data mode
+                        println!("DT");
                         if let Err(e) = mame.write_all(b"79\x0d\x0a67\x0d\x0a19\x0d\x0a").await {
                             eprintln!("Can't talk to MAME: error={e}");
                             return;
                         }
 
-                        println!("Touching PPP! {}", remote_socket_address);
+                        let mame_to_ppp_copied_bytes;
+                        let ppp_to_mame_copied_bytes;
 
-                        println!("CMD: {}", local_program_command);
+                        if local_program_command != "" {
+                            println!("Launching then touching some PPP! '{}'", local_program_command);
 
-                        let mut ppp = match TcpStream::connect(&remote_socket_address).await {
-                            Ok(result) => result,
-                            Err(e) => {
-                                eprintln!("Couldn't touch PPP: error={e}");
-                                return;
-                            }
-                        };
+                            (mame_to_ppp_copied_bytes, ppp_to_mame_copied_bytes) = match local_exec_loop(&mut mame, &local_program_command).await {
+                                Ok(r) => r,
+                                Err(e) => {
+                                    eprintln!("Error in remote PPP loop: error={e}");
+                                    return;
+                                }
+                            };
+                        } else {
+                            println!("Touching PPP! '{}'", remote_socket_address);
 
-                        match tokio::io::copy_bidirectional(&mut mame, &mut ppp).await {
-                            Ok((n1, n2)) => {
-                                println!("Server sent {} bytes and received {} bytes", n1, n2);
-                            }
-                            Err(e) => {
-                                println!("Server error: {}", e);
-                            }
+                            (mame_to_ppp_copied_bytes, ppp_to_mame_copied_bytes) = match remote_ppp_loop(&mut mame, &remote_socket_address).await {
+                                Ok(r) => r,
+                                Err(e) => {
+                                    eprintln!("Error in remote PPP loop: error={e}");
+                                    return;
+                                }
+                            };
                         }
 
-                        println!("Looks like the MAME is done? Taking my hands off PPP.\n");
-
-                        comcnt = 0;
+                        println!("Looks like the MAME is done? Taking my hands off PPP. {mame_to_ppp_copied_bytes} bytes copied from MAME to PPP; {ppp_to_mame_copied_bytes} bytes copied from PPP to MAME\n");
                     }
+
+                    at_string = "".to_string();
                 }
             }
         });
