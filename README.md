@@ -10,7 +10,25 @@ After installing the [Rust compile tools](https://www.rust-lang.org/), you can c
 cargo build
 ```
 
-For more information, you can read this guide: http://podsix.org/articles/pimodem/. This would replace the tcpser setup. Keep in mind that this program doesn't understand Telnet or IP232, so you might need to skip the xinet.d setup on that page. In place of the xinet.d server you can use socat:
+For more information, you can read this guide: http://podsix.org/articles/pimodem/. This would replace the tcpser setup. Keep in mind that this program doesn't understand Telnet or IP232, so you might need to change the xinet.d setup on that PiModem setup page. In place of the `/etc/xinetd.d/pppd` file, you can use this:
+
+```sh
+service pppd
+{
+    type = UNLISTED
+    flags = REUSE
+    socket_type = stream
+    wait = no
+    user = root
+    server = /usr/sbin/pppd
+    server_args = notty noipv6
+    disable = no
+    bind = 127.0.0.1
+    port = 2323
+}
+```
+
+Alternatively, you can use socat to do the same thing:
 
 ```sh
 socat tcp-l:2323,fork,reuseaddr exec:'/usr/sbin/pppd notty noipv6',pty,rawer,nonblock=1,iexten=0,b115200
