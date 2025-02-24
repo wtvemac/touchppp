@@ -280,6 +280,8 @@ async fn server_loop(start_cmd: &StartCommand) -> Result<(), Box<dyn std::error:
         tokio::spawn(async move {
 
             let mut buf = [0; BUFFER_SIZE];
+            let mut is_56k_modem = false;
+            let mut is_56k_connect = false;
 
             println!("Looks like we got a wild MAME @ {mame_socket_address}");
 
@@ -303,14 +305,33 @@ async fn server_loop(start_cmd: &StartCommand) -> Result<(), Box<dyn std::error:
                     print!("{}", s.replace("\x0d", "\x0a"));
                 }
 
-                // 79: CARRIER 33600
+
+                // 162: CARRIER 56000 -OR- 79: CARRIER 33600
+                //      This doesn't really matter that much with MAME. TouchPPP doesn't throttle the connection either way.
+                //      But you do see a different "Connected at" message.
                 // 67: COMPRESSION: V.42 bis
                 // 19: CONECTED 115200
-
                 if buf[n - 1] == 0x0d {
+                    if at_string.as_str().contains("S51=31") {
+                        println!("Well... they want me to disable 56k (and think I'm a softmodem)");
+                        is_56k_connect = false;
+                    } else if at_string.as_str().contains("+MS=11,1") {
+                        println!("Well.. they want me to disable 56k (and think I'm a Rockwell hardmodem)");
+                        is_56k_connect = false;
+                    }
+
                     // Init string always turns echo off
                     if at_string.as_str().contains("E0") { // Init string
                         if let Err(e) = mame.write_all(b"OK\x0d\x0a").await {
+                            eprintln!("Can't talk to MAME: error={e}");
+                            return;
+                        }
+                    // I3 in the string means firmware version query
+                    } else if at_string.contains("I3") { // Firmware info (56k modems only)
+                        println!("They think we're a 56k modem so turning 56k on!");
+                        is_56k_modem = true;
+                        is_56k_connect = true;
+                        if let Err(e) = mame.write_all(b"\x0d\x0aV69420_WEBTV-K56_DLP\x0d\x0a").await {
                             eprintln!("Can't talk to MAME: error={e}");
                             return;
                         }
@@ -323,16 +344,26 @@ async fn server_loop(start_cmd: &StartCommand) -> Result<(), Box<dyn std::error:
                         }
                     // DT in the string means a dial command.
                     } else if at_string.contains("DT") { // Dial string
+                        if at_string.contains("18006138199") || at_string.contains("18004653537") { // Dialing the 1800 number should never connect as 56k
+                            is_56k_connect = false;
+                        }
+
                         if let Err(e) = mame.write_all(b"0\x0d\x0a").await {
                             eprintln!("Can't talk to MAME: error={e}");
                             return;
                         }
-
                     // ATD standalone is the request to go into data mode.
                     } else if at_string.contains("TD\x0d") { // ATD, go into data mode
-                        if let Err(e) = mame.write_all(b"79\x0d\x0a67\x0d\x0a19\x0d\x0a").await {
-                            eprintln!("Can't talk to MAME: error={e}");
-                            return;
+                        if is_56k_modem && is_56k_connect {
+                            if let Err(e) = mame.write_all(b"162\x0d\x0a67\x0d\x0a19\x0d\x0a").await {
+                                eprintln!("Can't talk to MAME: error={e}");
+                                return;
+                            }
+                        } else {
+                            if let Err(e) = mame.write_all(b"79\x0d\x0a67\x0d\x0a19\x0d\x0a").await {
+                                eprintln!("Can't talk to MAME: error={e}");
+                                return;
+                            }
                         }
 
                         let mame_to_ppp_copied_bytes;
