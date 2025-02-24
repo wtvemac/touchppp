@@ -269,7 +269,7 @@ async fn server_loop(start_cmd: &StartCommand) -> Result<(), Box<dyn std::error:
 
     println!("Listening on {listen_socket_address}.\n");
 
-    println!("You need to add '-spot:modem null_modem -bitb socket.{listen_socket_address}' to the MAME command line.\n");
+    println!("You need to add '-spot:modem null_modem -bitb socket.{listen_socket_address}' for wtv1 or add '-solo:modem null_modem -bitb socket.{listen_socket_address}' for wtv2 to the MAME command line.\n");
 
     loop {
         let (mut mame, mame_socket_address) = listener.accept().await?;
