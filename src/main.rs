@@ -132,6 +132,7 @@ fn parse_options() -> Result<StartCommand, Box<dyn std::error::Error>> {
 async fn copy_loop<R, W>(
     read: &mut R,
     write: &mut W,
+    at_check: bool,
     mut abort: broadcast::Receiver<()>,
 ) -> tokio::io::Result<usize>
 where
@@ -140,7 +141,8 @@ where
 {
     let mut copied_bytes = 0;
     let mut buf = [0u8; BUFFER_SIZE];
-    loop {
+    let mut at_string: String = "".to_string();
+    'conn: loop {
         let bytes_found;
         tokio::select! {
             biased;
@@ -152,16 +154,38 @@ where
                 })?;
             },
             _ = abort.recv() => {
-                break;
+                break 'conn;
             }
         }
 
         if bytes_found == 0 {
-            break;
+            break 'conn;
         }
 
         //thread::sleep(time::Duration::from_millis(10));
         //println!("B:{:x?}", &buf[0..bytes_found]);
+
+        if at_check {
+            for i in 0..bytes_found {
+                if buf[i] >= 0x0a && buf[i] < 0x7a {
+                    let s = String::from_utf8_lossy(&buf[i..i+1]);
+                    at_string.push_str(&s);
+
+                    if (at_string.len() >= 2 && !at_string.starts_with("AT")) || at_string.len() > 50 {
+                        at_string = "".to_string();
+                    } else if at_string.len() >= 5 && buf[i] == 0x0d {
+                        if at_string.starts_with("AT") {
+                            println!("AT command in PPP traffic detected. Disconnecting and going back to command state.");
+                            break 'conn;
+                        }
+
+                        at_string = "".to_string();
+                    }
+                } else {
+                    at_string = "".to_string();
+                }
+            }
+        }
 
         write.write_all(&buf[0..bytes_found]).await?;
         copied_bytes += bytes_found;
@@ -200,9 +224,9 @@ async fn local_exec_loop(mame: &mut TcpStream, local_program_command: &String) -
     let (cancel, _) = broadcast::channel::<()>(1);
 
     let (ppp_to_mame_copied_bytes, mame_to_ppp_copied_bytes) = tokio::join!{
-        copy_loop(&mut ppp_reader, &mut mame_writer, cancel.subscribe())
+        copy_loop(&mut ppp_reader, &mut mame_writer, false, cancel.subscribe())
             .then(|r| { let _ = cancel.send(()); async { r } }),
-        copy_loop(&mut mame_reader, &mut ppp_writer, cancel.subscribe())
+        copy_loop(&mut mame_reader, &mut ppp_writer, true, cancel.subscribe())
             .then(|r| { let _ = cancel.send(()); async { r } }),
     };
 
@@ -225,9 +249,9 @@ async fn remote_ppp_loop(mame: &mut TcpStream, remote_socket_address: &String) -
     let (cancel, _) = broadcast::channel::<()>(1);
 
     let (ppp_to_mame_copied_bytes, mame_to_ppp_copied_bytes) = tokio::join!{
-        copy_loop(&mut ppp_reader, &mut mame_writer, cancel.subscribe())
+        copy_loop(&mut ppp_reader, &mut mame_writer, false, cancel.subscribe())
             .then(|r| { let _ = cancel.send(()); async { r } }),
-        copy_loop(&mut mame_reader, &mut ppp_writer, cancel.subscribe())
+        copy_loop(&mut mame_reader, &mut ppp_writer, true, cancel.subscribe())
             .then(|r| { let _ = cancel.send(()); async { r } }),
     };
 
