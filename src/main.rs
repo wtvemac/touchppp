@@ -258,6 +258,144 @@ async fn remote_ppp_loop(mame: &mut TcpStream, remote_socket_address: &String) -
     Ok((mame_to_ppp_copied_bytes.unwrap(), ppp_to_mame_copied_bytes.unwrap()))
 }
 
+async fn send_result(mame: &mut TcpStream, short_code: &[u8], lookup_long_result: bool, leading_white_space: bool) -> Result<(), std::io::Error> {
+    if leading_white_space {
+        if let Err(e) = mame.write_all(b"\x0d\x0a").await {
+            return Err(e);
+        }
+    }
+
+    if lookup_long_result {
+        let long_result: &[u8] = match short_code {
+            b"0" => b"OK",
+            b"1" => b"CONNECT",
+            b"2" => b"RING",
+            b"3" => b"NO CARRIER",
+            b"4" => b"ERROR",
+            b"5" => b"CONNECT 1200",
+            b"6" => b"NO DIALTONE",
+            b"7" => b"BUSY",
+            b"8" => b"NO ANSWER",
+            b"9" => b"CONNECT 0600",
+            b"10" => b"CONNECT 2400",
+            b"11" => b"CONNECT 4800",
+            b"12" => b"CONNECT 9600",
+            b"13" => b"CONNECT 7200",
+            b"14" => b"CONNECT 12000",
+            b"15" => b"CONNECT 14400",
+            b"16" => b"CONNECT 19200",
+            b"17" => b"CONNECT 38400",
+            b"18" => b"CONNECT 57600",
+            b"19" => b"CONNECT 115200",
+            b"20" => b"CONNECT 230400",
+            b"22" => b"CONNECT 75TX/1200RX",
+            b"23" => b"CONNECT 1200TX/75RX",
+            b"24" => b"DELAYED",
+            b"32" => b"BLACKLISTED",
+            b"33" => b"FAX",
+            b"35" => b"DATA",
+            b"40" => b"CARRIER 300",
+            b"44" => b"CARRIER 1200/75",
+            b"45" => b"CARRIER 75/1200",
+            b"46" => b"CARRIER 1200",
+            b"47" => b"CARRIER 2400",
+            b"48" => b"CARRIER 4800",
+            b"49" => b"CARRIER 7200",
+            b"50" => b"CARRIER 9600",
+            b"51" => b"CARRIER 12000",
+            b"52" => b"CARRIER 14400",
+            b"53" => b"CARRIER 16800",
+            b"54" => b"CARRIER 19200",
+            b"55" => b"CARRIER 21600",
+            b"56" => b"CARRIER 24000",
+            b"57" => b"CARRIER 26400",
+            b"58" => b"CARRIER 28800",
+            b"59" => b"CONNECT 16800",
+            b"61" => b"CONNECT 21600",
+            b"62" => b"CONNECT 24000",
+            b"63" => b"CONNECT 26400",
+            b"64" => b"CONNECT 28800",
+            b"66" => b"COMPRESSION: CLASS 5",
+            b"67" => b"COMPRESSION: V.42 bis",
+            b"69" => b"COMPRESSION: NONE",
+            b"70" => b"PROTOCOL: NONE",
+            b"77" => b"PROTOCOL: LAPM",
+            b"78" => b"CARRIER 31200",
+            b"79" => b"CARRIER 33600",
+            b"80" => b"PROTOCOL: ALT",
+            b"81" => b"PROTOCOL: ALT-CELLULAR",
+            b"84" => b"CONNECT 33600",
+            b"91" => b"CONNECT 31200",
+            b"150" => b"CARRIER 32000",
+            b"151" => b"CARRIER 34000",
+            b"152" => b"CARRIER 36000",
+            b"153" => b"CARRIER 38000",
+            b"154" => b"CARRIER 40000",
+            b"155" => b"CARRIER 42000",
+            b"156" => b"CARRIER 44000",
+            b"157" => b"CARRIER 46000",
+            b"158" => b"CARRIER 48000",
+            b"159" => b"CARRIER 50000",
+            b"160" => b"CARRIER 52000",
+            b"161" => b"CARRIER 54000",
+            b"162" => b"CARRIER 56000",
+            b"165" => b"CONNECT 32000",
+            b"166" => b"CONNECT 34000",
+            b"167" => b"CONNECT 36000",
+            b"168" => b"CONNECT 38000",
+            b"169" => b"CONNECT 40000",
+            b"170" => b"CONNECT 42000",
+            b"171" => b"CONNECT 44000",
+            b"172" => b"CONNECT 46000",
+            b"173" => b"CONNECT 48000",
+            b"174" => b"CONNECT 50000",
+            b"175" => b"CONNECT 52000",
+            b"176" => b"CONNECT 54000",
+            b"177" => b"CONNECT 56000",
+            b"+F4" => b"+FCERROR",
+            b"V69420_WEBTV-K56_DLP" => b"V69420_WEBTV-K56_DLP",
+            _ => b"OK"
+        };
+
+        if let Err(e) = mame.write_all(long_result).await {
+            return Err(e);
+        }
+    } else {
+        if let Err(e) = mame.write_all(short_code).await {
+            return Err(e);
+        }
+    }
+
+    if let Err(e) = mame.write_all(b"\x0d\x0a").await {
+        return Err(e);
+    }
+ 
+    return Ok(());
+}
+
+async fn send_connection_result(mame: &mut TcpStream, is_56k_connect: bool, lookup_long_result: bool, leading_white_space: bool) -> Result<(), std::io::Error> {
+    // Carrier speed doesn't really matter that much with MAME. TouchPPP doesn't throttle the connection either way.
+    // But you do see a different "Connected at" message from the OS.
+    if is_56k_connect {
+        if let Err(e) = send_result(mame, b"162", lookup_long_result, leading_white_space).await { // CARRIER 56000
+            return Err(e);
+        }
+    } else {
+        if let Err(e) = send_result(mame, b"79", lookup_long_result, leading_white_space).await { // CARRIER 33600
+            return Err(e);
+        }
+    }
+
+    if let Err(e) = send_result(mame, b"67", lookup_long_result, leading_white_space).await { // COMPRESSION: V.42 bis
+        return Err(e);
+    }
+    if let Err(e) = send_result(mame, b"19", lookup_long_result, leading_white_space).await { // CONNECT 115200
+        return Err(e);
+    }
+
+    return Ok(());
+}
+
 //#[tokio::main(flavor = "multi_thread", worker_threads = 3)]
 #[tokio::main]
 async fn server_loop(start_cmd: &StartCommand) -> Result<(), Box<dyn std::error::Error>> {
@@ -307,6 +445,7 @@ async fn server_loop(start_cmd: &StartCommand) -> Result<(), Box<dyn std::error:
             let mut is_56k_modem = false;
             let mut is_56k_connect = false;
             let mut is_webtvos = true;
+            let mut send_long_result = true;
 
             println!("Looks like we got a wild MAME @ {mame_socket_address}");
 
@@ -330,17 +469,11 @@ async fn server_loop(start_cmd: &StartCommand) -> Result<(), Box<dyn std::error:
                     print!("{}", s.replace("\x0d", "\x0a"));
                 }
 
-
-                // 162: CARRIER 56000 -OR- 79: CARRIER 33600
-                //      This doesn't really matter that much with MAME. TouchPPP doesn't throttle the connection either way.
-                //      But you do see a different "Connected at" message.
-                // 67: COMPRESSION: V.42 bis
-                // 19: CONECTED 115200
                 if buf[n - 1] == 0x0d {
-                    if at_string.as_str().contains("S51=31") {
+                    if at_string.as_str().contains("S51=31") { // Don't know the S51 register details but seems to be used to disable 56k, Rockwell modem doesn't understand this
                         println!("Well... they want me to disable 56k (and think I'm a softmodem)");
                         is_56k_connect = false;
-                    } else if at_string.as_str().contains("+MS=11,1") {
+                    } else if at_string.as_str().contains("+MS=11,1") { // Modulation select, 11,1 disables K56flex and V90
                         println!("Well.. they want me to disable 56k (and think I'm a Rockwell hardmodem)");
                         is_56k_connect = false;
                     }
@@ -351,27 +484,18 @@ async fn server_loop(start_cmd: &StartCommand) -> Result<(), Box<dyn std::error:
                         println!("Found what looks like Windows CE's Unimodem init string.");
                         is_webtvos = false;
                     }
-                    
 
-                    // Init string always turns echo off
-                    if at_string.as_str().contains("E0") { // Init string
-                        if let Err(e) = mame.write_all(b"OK\x0d\x0a").await {
-                            eprintln!("Can't talk to MAME: error={e}");
-                            return;
-                        }
-                    // I3 in the string means firmware version query
-                    } else if at_string.contains("I3") { // Firmware info (56k modems only)
+                    if at_string.as_str().contains("V1") { // Verbose results on
+                        send_long_result = true;
+                    } else if at_string.as_str().contains("V0") { // Verbose results off
+                        send_long_result = false;
+                    }
+
+                    if at_string.contains("I3") { // Firmware info (56k modems only)
                         println!("They think we're a 56k modem so turning 56k on!");
                         is_56k_modem = true;
                         is_56k_connect = true;
-                        if let Err(e) = mame.write_all(b"\x0d\x0aV69420_WEBTV-K56_DLP\x0d\x0a").await {
-                            eprintln!("Can't talk to MAME: error={e}");
-                            return;
-                        }
-                    // Dial setup string usually doesn't have a phone number or echo value.
-                    } else if !at_string.contains("E0") && !at_string.contains("DT") && !at_string.contains("TD") { // Dial setup string
-                        // OK
-                        if let Err(e) = mame.write_all(b"\x0d\x0a0\x0d\x0a").await {
+                        if let Err(e) = send_result(&mut mame, b"V69420_WEBTV-K56_DLP", false, true).await {
                             eprintln!("Can't talk to MAME: error={e}");
                             return;
                         }
@@ -381,22 +505,15 @@ async fn server_loop(start_cmd: &StartCommand) -> Result<(), Box<dyn std::error:
                             is_56k_connect = false;
                         }
 
-                        if let Err(e) = mame.write_all(b"0\x0d\x0a").await {
+                        if let Err(e) = send_result(&mut mame, b"0", send_long_result, false).await { // OK
                             eprintln!("Can't talk to MAME: error={e}");
                             return;
                         }
                     // ATD standalone is the request to go into data mode.
                     } else if at_string.contains("TD\x0d") { // ATD, go into data mode
-                        if is_56k_modem && is_56k_connect {
-                            if let Err(e) = mame.write_all(b"162\x0d\x0a67\x0d\x0a19\x0d\x0a").await {
-                                eprintln!("Can't talk to MAME: error={e}");
-                                return;
-                            }
-                        } else {
-                            if let Err(e) = mame.write_all(b"79\x0d\x0a67\x0d\x0a19\x0d\x0a").await {
-                                eprintln!("Can't talk to MAME: error={e}");
-                                return;
-                            }
+                        if let Err(e) = send_connection_result(&mut mame, is_56k_modem && is_56k_connect, send_long_result, false).await {
+                            eprintln!("Can't talk to MAME: error={e}");
+                            return;
                         }
 
                         let mame_to_ppp_copied_bytes;
@@ -425,8 +542,13 @@ async fn server_loop(start_cmd: &StartCommand) -> Result<(), Box<dyn std::error:
                         }
 
                         println!("Looks like the MAME is done? Taking my hands off PPP. {mame_to_ppp_copied_bytes} bytes copied from MAME to PPP; {ppp_to_mame_copied_bytes} bytes copied from PPP to MAME\n");
+                    // All other command strings
+                    } else {
+                        if let Err(e) = send_result(&mut mame, b"0", send_long_result, true).await { // OK
+                            eprintln!("Can't talk to MAME: error={e}");
+                            return;
+                        }
                     }
-
                     at_string = "".to_string();
                 }
             }
