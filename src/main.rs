@@ -10,6 +10,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader, BufWriter};
 use tokio::sync::broadcast;
 use tokio::process::Command;
 use std::process::Stdio;
+use std::{thread, time};
 
 #[macro_use]
 extern crate counted_array;
@@ -31,6 +32,7 @@ struct StartOption {
 
 const BUFFER_SIZE: usize = 0x1000;
 const DEFAULT_IP: &'static str = "127.0.0.1";
+const WINCE_COMMAND_DELAY_MS: u64 = 1000;
 
 counted_array!(static AVAILABLE_OPTIONS: [StartOption; _] = [
     StartOption {
@@ -402,7 +404,7 @@ async fn send_result(mame: &mut TcpStream, short_code: &[u8], lookup_long_result
     Ok(())
 }
 
-async fn send_connection_result(mame: &mut TcpStream, is_56k_connect: bool, lookup_long_result: bool, leading_white_space: bool) -> Result<(), std::io::Error> {
+async fn send_webtvos_connection_result(mame: &mut TcpStream, is_56k_connect: bool, lookup_long_result: bool, leading_white_space: bool) -> Result<(), std::io::Error> {
     // Carrier speed doesn't really matter that much with MAME. TouchPPP doesn't throttle the connection either way.
     // But you do see a different "Connected at" message from the OS.
     if is_56k_connect {
@@ -421,6 +423,22 @@ async fn send_connection_result(mame: &mut TcpStream, is_56k_connect: bool, look
     if let Err(e) = send_result(mame, b"19", lookup_long_result, leading_white_space).await { // CONNECT 115200
         return Err(e);
     }
+
+    Ok(())
+}
+
+async fn send_wince_connection_result(mame: &mut TcpStream, lookup_long_result: bool, leading_white_space: bool) -> Result<(), std::io::Error> {
+    thread::sleep(time::Duration::from_millis(WINCE_COMMAND_DELAY_MS));
+    if let Err(e) = send_result(mame, b"2", lookup_long_result, leading_white_space).await { // RING
+        return Err(e);
+    }
+
+    thread::sleep(time::Duration::from_millis(WINCE_COMMAND_DELAY_MS));
+    if let Err(e) = send_result(mame, b"1", lookup_long_result, leading_white_space).await { // CONNECT
+        return Err(e);
+    }
+
+    thread::sleep(time::Duration::from_millis(WINCE_COMMAND_DELAY_MS));
 
     Ok(())
 }
@@ -534,20 +552,25 @@ async fn server_loop(start_cmd: &StartCommand) -> Result<(), Box<dyn std::error:
                             is_56k_connect = false;
                         }
 
-                        if let Err(e) = send_result(&mut mame, b"0", send_long_result, false).await { // OK
-                            eprintln!("Can't talk to MAME: error={e}");
-                            return;
-                        }
-
                         if !is_webtvos {
+                            if let Err(e) = send_wince_connection_result(&mut mame, send_long_result, false).await {
+                                eprintln!("Can't talk to MAME: error={e}");
+                                return;
+                            }
+                            
                             if let Err(e) = start_ppp_loop(&mut mame, &local_program_command, &remote_socket_address).await {
                                 eprintln!("Error in PPP loop: error={e}");
+                                return;
+                            }
+                        } else {
+                            if let Err(e) = send_result(&mut mame, b"0", send_long_result, false).await { // OK
+                                eprintln!("Can't talk to MAME: error={e}");
                                 return;
                             }
                         }
                     // ATD standalone is the request to go into data mode.
                     } else if at_string.contains("TD\x0d") { // ATD, go into data mode
-                        if let Err(e) = send_connection_result(&mut mame, is_56k_modem && is_56k_connect, send_long_result, false).await {
+                        if let Err(e) = send_webtvos_connection_result(&mut mame, is_56k_modem && is_56k_connect, send_long_result, false).await {
                             eprintln!("Can't talk to MAME: error={e}");
                             return;
                         }
@@ -558,8 +581,6 @@ async fn server_loop(start_cmd: &StartCommand) -> Result<(), Box<dyn std::error:
                                 return;
                             }
                         }
-
-                        println!("Looks like the MAME is done? Taking my hands off PPP. {mame_to_ppp_copied_bytes} bytes copied from MAME to PPP; {ppp_to_mame_copied_bytes} bytes copied from PPP to MAME\n");
                     // All other command strings
                     } else {
                         if let Err(e) = send_result(&mut mame, b"0", send_long_result, true).await { // OK
