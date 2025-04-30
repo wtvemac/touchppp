@@ -538,6 +538,13 @@ async fn server_loop(start_cmd: &StartCommand) -> Result<(), Box<dyn std::error:
                             eprintln!("Can't talk to MAME: error={e}");
                             return;
                         }
+
+                        if !is_webtvos {
+                            if let Err(e) = start_ppp_loop(&mut mame, &local_program_command, &remote_socket_address).await {
+                                eprintln!("Error in PPP loop: error={e}");
+                                return;
+                            }
+                        }
                     // ATD standalone is the request to go into data mode.
                     } else if at_string.contains("TD\x0d") { // ATD, go into data mode
                         if let Err(e) = send_connection_result(&mut mame, is_56k_modem && is_56k_connect, send_long_result, false).await {
@@ -545,9 +552,11 @@ async fn server_loop(start_cmd: &StartCommand) -> Result<(), Box<dyn std::error:
                             return;
                         }
 
-                        if let Err(e) = start_ppp_loop(&mut mame, &local_program_command, &remote_socket_address).await {
-                            eprintln!("Error in remote PPP loop: error={e}");
-                            return;
+                        if is_webtvos {
+                            if let Err(e) = start_ppp_loop(&mut mame, &local_program_command, &remote_socket_address).await {
+                                eprintln!("Error in PPP loop: error={e}");
+                                return;
+                            }
                         }
 
                         println!("Looks like the MAME is done? Taking my hands off PPP. {mame_to_ppp_copied_bytes} bytes copied from MAME to PPP; {ppp_to_mame_copied_bytes} bytes copied from PPP to MAME\n");
