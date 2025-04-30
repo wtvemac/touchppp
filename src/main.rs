@@ -306,6 +306,7 @@ async fn server_loop(start_cmd: &StartCommand) -> Result<(), Box<dyn std::error:
             let mut buf = [0; BUFFER_SIZE];
             let mut is_56k_modem = false;
             let mut is_56k_connect = false;
+            let mut is_webtvos = true;
 
             println!("Looks like we got a wild MAME @ {mame_socket_address}");
 
@@ -343,6 +344,14 @@ async fn server_loop(start_cmd: &StartCommand) -> Result<(), Box<dyn std::error:
                         println!("Well.. they want me to disable 56k (and think I'm a Rockwell hardmodem)");
                         is_56k_connect = false;
                     }
+
+                    // Windows CE's Unimodem sends F0 at the start, while WebTV OS's TellyScripts does not.
+                    // Only seen on LC2 WLD (Italian) boxes, the other WebTV Windows CE builds (UltimateTV) uses a softmodem.
+                    if at_string.as_str().contains("F0") {
+                        println!("Found what looks like Windows CE's Unimodem init string.");
+                        is_webtvos = false;
+                    }
+                    
 
                     // Init string always turns echo off
                     if at_string.as_str().contains("E0") { // Init string
