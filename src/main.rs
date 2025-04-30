@@ -1,7 +1,6 @@
 // By: Eric MacDonald (eMac)
 
-use std::env;
-use getopts::Options;
+use clap::Parser;
 use std::str;
 use std::io::ErrorKind::{ConnectionReset, ConnectionAborted};
 use futures::FutureExt;
@@ -12,123 +11,54 @@ use tokio::process::Command;
 use std::process::Stdio;
 use std::{thread, time};
 
-#[macro_use]
-extern crate counted_array;
-
-struct StartCommand {
-    program: String,
-    params: getopts::Matches,
-    getopts: Options,
-}
-
-struct StartOption {
-    short_name: &'static str,
-    long_name: &'static str,
-    descirption: &'static str,
-    example: &'static str,
-    hint: &'static str,
-    is_flag: bool,
-}
-
 const BUFFER_SIZE: usize = 0x1000;
 const DEFAULT_IP: &'static str = "127.0.0.1";
 const WINCE_COMMAND_DELAY_MS: u64 = 1000;
 
-counted_array!(static AVAILABLE_OPTIONS: [StartOption; _] = [
-    StartOption {
-        short_name: "l",
-        long_name: "listen",
-        descirption: "The socket address to listen on. This defaults to 127.0.0.1:1122. 127.0.0.1 is used as the IP if just the port is given.",
-        example: "-l 6400",
-        hint: "[HOST:]PORT",
-        is_flag: false
-    },
-    StartOption {
-        short_name: "c",
-        long_name: "connect",
-        descirption: "The remote server that provides PPP communication. This defaults to 127.0.0.1:2323.",
-        example: "-c ppp.cool.com:2323",
-        hint: "HOST:PORT",
-        is_flag: false
-    },
-    StartOption {
-        short_name: "e",
-        long_name: "exec",
-        descirption: "PPP command to run for direct PPP communication.",
-        example: "-e '/usr/sbin/pppd notty'",
-        hint: "'/path/to/exe exe_options'",
-        is_flag: false
-    },
-    StartOption {
-        short_name: "q",
-        long_name: "silent",
-        descirption: "Don't print anything unless it's a fatal exception. -h ignores this.",
-        example: "",
-        hint: "",
-        is_flag: true
-    },
-    StartOption {
-        short_name: "h",
-        long_name: "help",
-        descirption: "Print this help message",
-        example: "",
-        hint: "",
-        is_flag: true
-    },
-]);
-
-fn print_options(start_cmd: &StartCommand) -> Result<(), Box<dyn std::error::Error>> {
-    let description = concat!(
-        "WebTV Touch PPP v1.0.0: ",
-        "Provides a way for the WebTV MAME driver to talk with PPP using its null modem.",
-    );
-
-    let epilog = concat!(
-        "Special thanks to: Zefie, MattMan, and others in the WebTV hacking community!",
-    );
-
-    println!("{}\n", description);
-
-    let brief = format!("Usage: {} [options]", start_cmd.program);
-
-    print!("{}", start_cmd.getopts.usage(&brief));
-
-    println!("\n{}", epilog);
-
-    Ok(())
-}
-
-fn parse_options() -> Result<StartCommand, Box<dyn std::error::Error>> {
-    let args: Vec<String> = env::args().collect();
-
-    let mut getopts = Options::new();
-
-    for option in AVAILABLE_OPTIONS.iter() {
-        let description: String;
-
-        if option.example != "" {
-            description = format!("{}\nExample: {}", option.descirption, &option.example) ;
-        } else {
-            description = format!("{}", &option.descirption) ;
-        }
-
-        if option.is_flag {
-            getopts.optflag(&option.short_name, &option.long_name, &description);
-        } else {
-            getopts.optopt(&option.short_name, &option.long_name, &description, &option.hint);
-        }
-    }
-
-    let params = match getopts.parse(&args[1..]) {
-        Ok(m) => { m }
-        Err(f) => { panic!("{f}") }
-    };
-
-    Ok(StartCommand {
-        program: args[0].clone(),
-        params: params,
-        getopts: getopts,
-    })
+/// WebTV TouchPPP
+///
+/// Provides a way for the WebTV MAME driver to talk with PPP using its null modem.
+#[derive(Parser, Debug)]
+#[command(
+    version,
+    about,
+    long_about
+)]
+#[clap(
+    version = "1.5",
+    author = "wtvemac",
+    after_help = "Special thanks to: Zefie, MattMan, and others in the WebTV hacking community!"
+)]
+struct CmdOpts {
+    /// The socket address to listen on. 127.0.0.1 is used as the IP if just the port is given.
+    ///
+    /// Example: -l 6400
+    #[arg(
+        short,
+        long,
+        value_name = "[HOST:]PORT",
+        default_value_t = format!("{}:{}", DEFAULT_IP, 1122)
+    )]
+    listen: String,
+    /// The remote server that provides PPP communication. Either this or the -e option can be used.
+    ///
+    /// Example: -c ppp.cool.com:2323
+    #[arg(
+        short,
+        long,
+        value_name = "HOST:PORT",
+        default_value = "127.0.0.1:2323"
+    )]
+    connect: Option<String>,
+    /// PPP command to run for direct PPP communication. Either this or the -c option can be used.
+    ///
+    /// Example: -e '/usr/sbin/pppd notty'
+    #[arg(
+        short,
+        long,
+        value_name="/path/to/exe exe_options"
+    )]
+    exec: Option<String>,
 }
 
 async fn copy_loop<R, W>(
@@ -445,34 +375,22 @@ async fn send_wince_connection_result(mame: &mut TcpStream, lookup_long_result: 
 
 //#[tokio::main(flavor = "multi_thread", worker_threads = 3)]
 #[tokio::main]
-async fn server_loop(start_cmd: &StartCommand) -> Result<(), Box<dyn std::error::Error>> {
+async fn server_loop(start_cmd: &CmdOpts) -> Result<(), Box<dyn std::error::Error>> {
 
-    let mut listen_socket_address = format!("{}:{}", DEFAULT_IP, 1122);
-
-    if start_cmd.params.opt_present("l") {
-        listen_socket_address = start_cmd.params.opt_str("l")
-            .expect("failed to resolve listen address");
-
-        if !listen_socket_address.contains(":") {
-            listen_socket_address = format!("{}:{}", DEFAULT_IP, listen_socket_address);
-        }
+    let mut listen_socket_address = start_cmd.listen.clone();
+    if !listen_socket_address.contains(":") {
+        listen_socket_address = format!("{}:{}", DEFAULT_IP, listen_socket_address);
     }
 
-    let mut remote_socket_address = format!("{}:{}", DEFAULT_IP, 2323);
-    if start_cmd.params.opt_present("c") {
-        remote_socket_address = start_cmd.params.opt_str("c")
-            .expect("failed to resolve remote address");
+    let remote_socket_address = match start_cmd.connect.clone() {
+        Some(connect) => connect,
+        _ => format!("{}:{}", DEFAULT_IP, 2323)
+    };
 
-        if !listen_socket_address.contains(":") {
-            remote_socket_address = format!("{}:{}", DEFAULT_IP, remote_socket_address);
-        }
-    }
-
-    let mut local_program_command: String = "".to_string();
-    if start_cmd.params.opt_present("e") {
-        local_program_command = start_cmd.params.opt_str("e")
-            .expect("failed to resolve remote address");
-    }
+    let local_program_command = match start_cmd.exec.clone() {
+        Some(exec) => exec,
+        _ => "".to_string()
+    };
 
     let listener = TcpListener::bind(&listen_socket_address).await?;
 
@@ -596,22 +514,12 @@ async fn server_loop(start_cmd: &StartCommand) -> Result<(), Box<dyn std::error:
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let start_cmd = match parse_options() {
+    let opts: CmdOpts = CmdOpts::parse();
+
+    match server_loop(&opts) {
         Ok(r) => r,
         Err(e) => return Err(e)
     };
-
-    if start_cmd.params.opt_present("h") {
-        match print_options(&start_cmd) {
-            Ok(r) => r,
-            Err(e) => return Err(e)
-        };
-    } else {
-        match server_loop(&start_cmd) {
-            Ok(r) => r,
-            Err(e) => return Err(e)
-        };
-    }
 
     Ok(())
 }
