@@ -258,6 +258,35 @@ async fn remote_ppp_loop(mame: &mut TcpStream, remote_socket_address: &String) -
     Ok((mame_to_ppp_copied_bytes.unwrap(), ppp_to_mame_copied_bytes.unwrap()))
 }
 
+async fn start_ppp_loop(mame: &mut TcpStream, local_program_command: &String, remote_socket_address: &String) -> Result<(usize, usize), Box<dyn std::error::Error>> {
+    let mame_to_ppp_copied_bytes ;
+    let ppp_to_mame_copied_bytes ;
+
+    if local_program_command != "" {
+        println!("Launching then touching some PPP! '{}'", local_program_command);
+
+        (mame_to_ppp_copied_bytes, ppp_to_mame_copied_bytes) = match local_exec_loop(mame, local_program_command).await {
+            Ok(r) => r,
+            Err(e) => {
+                return Err(e);
+            }
+        };
+    } else {
+        println!("Touching PPP! '{}'", remote_socket_address);
+
+        (mame_to_ppp_copied_bytes, ppp_to_mame_copied_bytes) = match remote_ppp_loop(mame, remote_socket_address).await {
+            Ok(r) => r,
+            Err(e) => {
+                return Err(e);
+            }
+        };
+    }
+
+    println!("Looks like the MAME is done? Taking my hands off PPP. {mame_to_ppp_copied_bytes} bytes copied from MAME to PPP; {ppp_to_mame_copied_bytes} bytes copied from PPP to MAME\n");
+
+    Ok((mame_to_ppp_copied_bytes, ppp_to_mame_copied_bytes))
+}
+
 async fn send_result(mame: &mut TcpStream, short_code: &[u8], lookup_long_result: bool, leading_white_space: bool) -> Result<(), std::io::Error> {
     if leading_white_space {
         if let Err(e) = mame.write_all(b"\x0d\x0a").await {
@@ -370,7 +399,7 @@ async fn send_result(mame: &mut TcpStream, short_code: &[u8], lookup_long_result
         return Err(e);
     }
  
-    return Ok(());
+    Ok(())
 }
 
 async fn send_connection_result(mame: &mut TcpStream, is_56k_connect: bool, lookup_long_result: bool, leading_white_space: bool) -> Result<(), std::io::Error> {
@@ -393,7 +422,7 @@ async fn send_connection_result(mame: &mut TcpStream, is_56k_connect: bool, look
         return Err(e);
     }
 
-    return Ok(());
+    Ok(())
 }
 
 //#[tokio::main(flavor = "multi_thread", worker_threads = 3)]
@@ -516,29 +545,9 @@ async fn server_loop(start_cmd: &StartCommand) -> Result<(), Box<dyn std::error:
                             return;
                         }
 
-                        let mame_to_ppp_copied_bytes;
-                        let ppp_to_mame_copied_bytes;
-
-                        if local_program_command != "" {
-                            println!("Launching then touching some PPP! '{}'", local_program_command);
-
-                            (mame_to_ppp_copied_bytes, ppp_to_mame_copied_bytes) = match local_exec_loop(&mut mame, &local_program_command).await {
-                                Ok(r) => r,
-                                Err(e) => {
-                                    eprintln!("Error in remote PPP loop: error={e}");
-                                    return;
-                                }
-                            };
-                        } else {
-                            println!("Touching PPP! '{}'", remote_socket_address);
-
-                            (mame_to_ppp_copied_bytes, ppp_to_mame_copied_bytes) = match remote_ppp_loop(&mut mame, &remote_socket_address).await {
-                                Ok(r) => r,
-                                Err(e) => {
-                                    eprintln!("Error in remote PPP loop: error={e}");
-                                    return;
-                                }
-                            };
+                        if let Err(e) = start_ppp_loop(&mut mame, &local_program_command, &remote_socket_address).await {
+                            eprintln!("Error in remote PPP loop: error={e}");
+                            return;
                         }
 
                         println!("Looks like the MAME is done? Taking my hands off PPP. {mame_to_ppp_copied_bytes} bytes copied from MAME to PPP; {ppp_to_mame_copied_bytes} bytes copied from PPP to MAME\n");
