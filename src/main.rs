@@ -1,6 +1,8 @@
 // By: Eric MacDonald (eMac)
 
 use clap::Parser;
+use log;
+use clap_verbosity_flag::Verbosity;
 use std::str;
 use std::io::ErrorKind::{ConnectionReset, ConnectionAborted};
 use futures::FutureExt;
@@ -59,12 +61,22 @@ struct CmdOpts {
         value_name="/path/to/exe exe_options"
     )]
     exec: Option<String>,
+
+    // -q = silent
+    // default = errors
+    // -v = errors and warnings
+    // -vv = errors, warnings and simple info
+    // -vvv = errors, warnings, simple info and debug info
+    // -vvvv = errors, warnings, simple info, debug info and tracing info
+    #[command(flatten)]
+    verbosity: Verbosity
 }
 
 async fn copy_loop<R, W>(
     read: &mut R,
     write: &mut W,
-    at_check: bool,
+    is_mame: bool,
+    mame_socket_address: &String,
     mut abort: broadcast::Receiver<()>,
 ) -> tokio::io::Result<usize>
 where
@@ -94,10 +106,10 @@ where
             break 'conn;
         }
 
-        //thread::sleep(time::Duration::from_millis(10));
-        //println!("B:{:x?}", &buf[0..bytes_found]);
 
-        if at_check {
+        if is_mame {
+            log::trace!("[<{mame_socket_address}] {:x?}", &buf[0..bytes_found]);
+
             for i in 0..bytes_found {
                 if buf[i] >= 0x0a && buf[i] < 0x7a {
                     let s = String::from_utf8_lossy(&buf[i..i+1]);
@@ -107,7 +119,7 @@ where
                         at_string = "".to_string();
                     } else if at_string.len() >= 5 && buf[i] == 0x0d {
                         if at_string.starts_with("AT") {
-                            println!("AT command in PPP traffic detected. Disconnecting and going back to command state.");
+                            log::info!("AT command in PPP traffic detected. Disconnecting and going back to command state.");
                             break 'conn;
                         }
 
@@ -117,6 +129,8 @@ where
                     at_string = "".to_string();
                 }
             }
+        } else {
+            log::trace!("[>{mame_socket_address}] {:x?}", &buf[0..bytes_found]);
         }
 
         write.write_all(&buf[0..bytes_found]).await?;
@@ -126,15 +140,15 @@ where
     Ok(copied_bytes)
 }
 
-async fn local_exec_loop(mame: &mut TcpStream, local_program_command: &String) -> Result<(usize, usize), Box<dyn std::error::Error>> {
+async fn local_exec_loop(mame: &mut TcpStream, mame_socket_address: &String, local_program_command: &String) -> Result<(usize, usize), Box<dyn std::error::Error>> {
     let (mut mame_reader, mut mame_writer) = mame.split();
 
     let mut the_args = local_program_command.split(' '); 
     let first: &str = the_args.next().unwrap();
     let rest: Vec<&str> = the_args.collect::<Vec<&str>>();
 
-    println!("Got it? '{}'\n", first);
-    println!("Got it2? '{}'\n", local_program_command);
+    log::debug!("Got it? '{}'", first);
+    log::debug!("Got it2? '{}'", local_program_command);
 
     let mut ppp = match Command::new(first)
         .args(rest)
@@ -144,7 +158,7 @@ async fn local_exec_loop(mame: &mut TcpStream, local_program_command: &String) -
         .spawn() {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("Unable to launch PPP! {e}");
+            log::error!("Unable to launch PPP! {e}");
 
             return Ok((0, 0));
         },
@@ -156,20 +170,20 @@ async fn local_exec_loop(mame: &mut TcpStream, local_program_command: &String) -
     let (cancel, _) = broadcast::channel::<()>(1);
 
     let (ppp_to_mame_copied_bytes, mame_to_ppp_copied_bytes) = tokio::join!{
-        copy_loop(&mut ppp_reader, &mut mame_writer, false, cancel.subscribe())
+        copy_loop(&mut ppp_reader, &mut mame_writer, false, mame_socket_address, cancel.subscribe())
             .then(|r| { let _ = cancel.send(()); async { r } }),
-        copy_loop(&mut mame_reader, &mut ppp_writer, true, cancel.subscribe())
+        copy_loop(&mut mame_reader, &mut ppp_writer, true, mame_socket_address, cancel.subscribe())
             .then(|r| { let _ = cancel.send(()); async { r } }),
     };
 
     Ok((mame_to_ppp_copied_bytes.unwrap(), ppp_to_mame_copied_bytes.unwrap()))
 }
 
-async fn remote_ppp_loop(mame: &mut TcpStream, remote_socket_address: &String) -> Result<(usize, usize), Box<dyn std::error::Error>> {
-    let mut ppp: TcpStream = match TcpStream::connect(remote_socket_address).await {
+async fn remote_ppp_loop(mame: &mut TcpStream, mame_socket_address: &String, ppp_socket_address: &String) -> Result<(usize, usize), Box<dyn std::error::Error>> {
+    let mut ppp: TcpStream = match TcpStream::connect(ppp_socket_address).await {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("Couldn't touch PPP: error={e}");
+            log::error!("Couldn't touch PPP: error={e}");
 
             return Ok((0, 0));
         }
@@ -181,32 +195,32 @@ async fn remote_ppp_loop(mame: &mut TcpStream, remote_socket_address: &String) -
     let (cancel, _) = broadcast::channel::<()>(1);
 
     let (ppp_to_mame_copied_bytes, mame_to_ppp_copied_bytes) = tokio::join!{
-        copy_loop(&mut ppp_reader, &mut mame_writer, false, cancel.subscribe())
+        copy_loop(&mut ppp_reader, &mut mame_writer, false, mame_socket_address, cancel.subscribe())
             .then(|r| { let _ = cancel.send(()); async { r } }),
-        copy_loop(&mut mame_reader, &mut ppp_writer, true, cancel.subscribe())
+        copy_loop(&mut mame_reader, &mut ppp_writer, true, mame_socket_address, cancel.subscribe())
             .then(|r| { let _ = cancel.send(()); async { r } }),
     };
 
     Ok((mame_to_ppp_copied_bytes.unwrap(), ppp_to_mame_copied_bytes.unwrap()))
 }
 
-async fn start_ppp_loop(mame: &mut TcpStream, local_program_command: &String, remote_socket_address: &String) -> Result<(usize, usize), Box<dyn std::error::Error>> {
+async fn start_ppp_loop(mame: &mut TcpStream, local_program_command: &String, ppp_socket_address: &String) -> Result<(usize, usize), Box<dyn std::error::Error>> {
     let mame_to_ppp_copied_bytes ;
     let ppp_to_mame_copied_bytes ;
 
     if local_program_command != "" {
-        println!("Launching then touching some PPP! '{}'", local_program_command);
+        log::info!("[{:?}] Launching then touching some PPP! '{}'", mame.peer_addr()?, local_program_command);
 
-        (mame_to_ppp_copied_bytes, ppp_to_mame_copied_bytes) = match local_exec_loop(mame, local_program_command).await {
+        (mame_to_ppp_copied_bytes, ppp_to_mame_copied_bytes) = match local_exec_loop(mame, &mame.peer_addr()?.to_string(), local_program_command).await {
             Ok(r) => r,
             Err(e) => {
                 return Err(e);
             }
         };
     } else {
-        println!("Touching PPP! '{}'", remote_socket_address);
+        log::info!("[{:?}] Touching PPP! '{}'", mame.peer_addr()?, ppp_socket_address);
 
-        (mame_to_ppp_copied_bytes, ppp_to_mame_copied_bytes) = match remote_ppp_loop(mame, remote_socket_address).await {
+        (mame_to_ppp_copied_bytes, ppp_to_mame_copied_bytes) = match remote_ppp_loop(mame, &mame.peer_addr()?.to_string(), ppp_socket_address).await {
             Ok(r) => r,
             Err(e) => {
                 return Err(e);
@@ -214,7 +228,7 @@ async fn start_ppp_loop(mame: &mut TcpStream, local_program_command: &String, re
         };
     }
 
-    println!("Looks like the MAME is done? Taking my hands off PPP. {mame_to_ppp_copied_bytes} bytes copied from MAME to PPP; {ppp_to_mame_copied_bytes} bytes copied from PPP to MAME\n");
+    log::info!("[{:?}] Looks like the MAME is done? Taking my hands off PPP. {mame_to_ppp_copied_bytes} bytes copied from MAME to PPP; {ppp_to_mame_copied_bytes} bytes copied from PPP to MAME", mame.peer_addr()?);
 
     Ok((mame_to_ppp_copied_bytes, ppp_to_mame_copied_bytes))
 }
@@ -394,9 +408,9 @@ async fn server_loop(start_cmd: &CmdOpts) -> Result<(), Box<dyn std::error::Erro
 
     let listener = TcpListener::bind(&listen_socket_address).await?;
 
-    println!("Listening on {listen_socket_address}.\n");
+    log::info!("Listening on {listen_socket_address}.");
 
-    println!("You need to add '-spot:modem null_modem -bitb socket.{listen_socket_address}' for wtv1 or add '-solo:modem null_modem -bitb socket.{listen_socket_address}' for wtv2 to the MAME command line.\n");
+    log::info!("You need to add '-spot:modem null_modem -bitb socket.{listen_socket_address}' for wtv1 or add '-solo:modem null_modem -bitb socket.{listen_socket_address}' for wtv2 to the MAME command line.");
 
     loop {
         let (mut mame, mame_socket_address) = listener.accept().await?;
@@ -412,7 +426,7 @@ async fn server_loop(start_cmd: &CmdOpts) -> Result<(), Box<dyn std::error::Erro
             let mut is_webtvos = true;
             let mut send_long_result = true;
 
-            println!("Looks like we got a wild MAME @ {mame_socket_address}");
+            log::info!("Looks like we got a wild MAME @ {mame_socket_address}");
 
             let mut at_string: String = "".to_string();
 
@@ -421,32 +435,34 @@ async fn server_loop(start_cmd: &CmdOpts) -> Result<(), Box<dyn std::error::Erro
                     Ok(n) if n == 0 => return,
                     Ok(n) => n,
                     Err(e) => {
-                        eprintln!("Can't listen to MAME: error={e}");
+                        log::error!("Can't listen to MAME: error={e}");
                         return;
                     }
                 };
+
+                log::trace!("[<{mame_socket_address}] {:x?}", &buf[0..n]);
 
                 if buf[0] >= 0x0a && buf[0] < 0x80 {
                     let s = String::from_utf8_lossy(&buf[0..n]);
 
                     at_string.push_str(&s);
-
-                    print!("{}", s.replace("\x0d", "\x0a"));
                 }
 
                 if buf[n - 1] == 0x0d {
+                    log::debug!("[{mame_socket_address}] {}", at_string.replace("\x0d", "").replace("\x0a", ""));
+
                     if at_string.as_str().contains("S51=31") { // Don't know the S51 register details but seems to be used to disable 56k, Rockwell modem doesn't understand this
-                        println!("Well... they want me to disable 56k (and think I'm a softmodem)");
+                        log::info!("[{mame_socket_address}] Well... they want me to disable 56k (and think I'm a softmodem)");
                         is_56k_connect = false;
                     } else if at_string.as_str().contains("+MS=11,1") { // Modulation select, 11,1 disables K56flex and V90
-                        println!("Well.. they want me to disable 56k (and think I'm a Rockwell hardmodem)");
+                        log::info!("[{mame_socket_address}] Well.. they want me to disable 56k (and think I'm a Rockwell hardmodem)");
                         is_56k_connect = false;
                     }
 
                     // Windows CE's Unimodem sends F0 at the start, while WebTV OS's TellyScripts does not.
                     // Only seen on LC2 WLD (Italian) boxes, the other WebTV Windows CE builds (UltimateTV) uses a softmodem.
                     if at_string.as_str().contains("F0") {
-                        println!("Found what looks like Windows CE's Unimodem init string.");
+                        log::info!("[{mame_socket_address}] Found what looks like Windows CE's Unimodem init string.");
                         is_webtvos = false;
                     }
 
@@ -457,11 +473,11 @@ async fn server_loop(start_cmd: &CmdOpts) -> Result<(), Box<dyn std::error::Erro
                     }
 
                     if at_string.contains("I3") { // Firmware info (56k modems only)
-                        println!("They think we're a 56k modem so turning 56k on!");
+                        log::info!("[{mame_socket_address}] They think we're a 56k modem so turning 56k on!");
                         is_56k_modem = true;
                         is_56k_connect = true;
                         if let Err(e) = send_result(&mut mame, b"V69420_WEBTV-K56_DLP", false, true).await {
-                            eprintln!("Can't talk to MAME: error={e}");
+                            log::error!("Can't talk to MAME: error={e}");
                             return;
                         }
                     // DT in the string means a dial command.
@@ -472,37 +488,37 @@ async fn server_loop(start_cmd: &CmdOpts) -> Result<(), Box<dyn std::error::Erro
 
                         if !is_webtvos {
                             if let Err(e) = send_wince_connection_result(&mut mame, send_long_result, false).await {
-                                eprintln!("Can't talk to MAME: error={e}");
+                                log::error!("Can't talk to MAME: error={e}");
                                 return;
                             }
                             
                             if let Err(e) = start_ppp_loop(&mut mame, &local_program_command, &remote_socket_address).await {
-                                eprintln!("Error in PPP loop: error={e}");
+                                log::error!("Error in PPP loop: error={e}");
                                 return;
                             }
                         } else {
                             if let Err(e) = send_result(&mut mame, b"0", send_long_result, false).await { // OK
-                                eprintln!("Can't talk to MAME: error={e}");
+                                log::error!("Can't talk to MAME: error={e}");
                                 return;
                             }
                         }
                     // ATD standalone is the request to go into data mode.
                     } else if at_string.contains("TD\x0d") { // ATD, go into data mode
                         if let Err(e) = send_webtvos_connection_result(&mut mame, is_56k_modem && is_56k_connect, send_long_result, false).await {
-                            eprintln!("Can't talk to MAME: error={e}");
+                            log::error!("Can't talk to MAME: error={e}");
                             return;
                         }
 
                         if is_webtvos {
                             if let Err(e) = start_ppp_loop(&mut mame, &local_program_command, &remote_socket_address).await {
-                                eprintln!("Error in PPP loop: error={e}");
+                                log::error!("Error in PPP loop: error={e}");
                                 return;
                             }
                         }
                     // All other command strings
                     } else {
                         if let Err(e) = send_result(&mut mame, b"0", send_long_result, true).await { // OK
-                            eprintln!("Can't talk to MAME: error={e}");
+                            log::error!("Can't talk to MAME: error={e}");
                             return;
                         }
                     }
@@ -515,6 +531,10 @@ async fn server_loop(start_cmd: &CmdOpts) -> Result<(), Box<dyn std::error::Erro
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let opts: CmdOpts = CmdOpts::parse();
+
+    env_logger::Builder::new()
+        .filter_level(opts.verbosity.into())
+        .init();
 
     match server_loop(&opts) {
         Ok(r) => r,
