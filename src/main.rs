@@ -110,16 +110,20 @@ where
         if is_mame {
             log::trace!("[<{mame_socket_address}] {:x?}", &buf[0..bytes_found]);
 
+            // This is very crude but gets the job done.
             for i in 0..bytes_found {
                 if buf[i] >= 0x0a && buf[i] < 0x7a {
                     let s = String::from_utf8_lossy(&buf[i..i+1]);
                     at_string.push_str(&s);
 
-                    if (at_string.len() >= 2 && !at_string.starts_with("AT")) || at_string.len() > 50 {
+                    if (at_string.len() >= 2 && (!at_string.starts_with("AT") && !at_string.starts_with("++"))) || at_string.len() > 50 {
                         at_string = "".to_string();
+                    } else if at_string.contains("+++") {
+                        log::info!("[{mame_socket_address}] Client requesting command mode with +++. Disconnecting and going back to command state.");
+                        break 'conn;
                     } else if at_string.len() >= 5 && buf[i] == 0x0d {
-                        if at_string.starts_with("AT") {
-                            log::info!("AT command in PPP traffic detected. Disconnecting and going back to command state.");
+                        if at_string.contains("AT") {
+                            log::info!("[{mame_socket_address}] AT command in PPP traffic detected. Disconnecting and going back to command state.");
                             break 'conn;
                         }
 
