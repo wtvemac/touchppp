@@ -484,8 +484,8 @@ async fn server_loop(start_cmd: &CmdOpts) -> Result<(), Box<dyn std::error::Erro
                             log::error!("Can't talk to MAME: error={e}");
                             return;
                         }
-                    // DT in the string means a dial command.
-                    } else if at_string.contains("DT") { // Dial string
+                    // DT or DP in the string means a dial command.
+                    } else if at_string.contains("DT") || at_string.contains("DP") { // Dial string
                         if at_string.contains("18006138199") || at_string.contains("18004653537") { // Dialing the 1800 number should never connect as 56k
                             is_56k_connect = false;
                         }
