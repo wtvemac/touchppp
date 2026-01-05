@@ -21,6 +21,15 @@ const WINCE_COMMAND_DELAY_MS: u64 = 1000;
 const CCHAR_LINE_FEED: u8 = 0x0a;
 const CCHAR_CARRIAGE_RETURN: u8 = 0x0d;
 
+// Only certain characters are interpreted as command text.
+// I'm using character ranges for this. I might implement something better at some point.
+// One range is for the command state (before PPP) and another is checking commands while talking with PPP.
+// I'm only looking for a shorter range of commands while WebTV is talking with PPP and don't want to capture PPP flow control chars that exist beyond 0x79.
+const CCHARS_ALLOWED_MIN_CMD: u8 = 0x0a;
+const CCHARS_ALLOWED_MAX_CMD: u8 = 0x7f;
+const CCHARS_ALLOWED_MIN_PPP: u8 = 0x0a;
+const CCHARS_ALLOWED_MAX_PPP: u8 = 0x79;
+
 /// WebTV TouchPPP
 ///
 /// Provides a way for the WebTV MAME driver to talk with PPP using its null modem.
@@ -116,7 +125,7 @@ where
 
             // This is very crude but gets the job done.
             for i in 0..bytes_found {
-                if buf[i] >= 0x0a && buf[i] < 0x7a {
+                if buf[i] >= CCHARS_ALLOWED_MIN_PPP && buf[i] <= CCHARS_ALLOWED_MAX_PPP {
                     let s = String::from_utf8_lossy(&buf[i..i+1]);
                     at_string.push_str(&s);
 
@@ -451,7 +460,7 @@ async fn server_loop(start_cmd: &CmdOpts) -> Result<(), Box<dyn std::error::Erro
 
                 log::trace!("[<{mame_socket_address}] {:x?}", &buf[0..n]);
 
-                if buf[0] >= 0x0a && buf[0] < 0x80 {
+                if buf[0] >= CCHARS_ALLOWED_MIN_CMD && buf[0] <= CCHARS_ALLOWED_MAX_CMD {
                     let s = String::from_utf8_lossy(&buf[0..n]);
 
                     at_string.push_str(&s);
