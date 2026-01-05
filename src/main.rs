@@ -433,6 +433,7 @@ async fn server_loop(start_cmd: &CmdOpts) -> Result<(), Box<dyn std::error::Erro
             let mut is_56k_connect = false;
             let mut is_webtvos = true;
             let mut send_long_result = true;
+            let mut echo_command = true;
 
             log::info!("Looks like we got a wild MAME @ {mame_socket_address}");
 
@@ -454,6 +455,13 @@ async fn server_loop(start_cmd: &CmdOpts) -> Result<(), Box<dyn std::error::Erro
                     let s = String::from_utf8_lossy(&buf[0..n]);
 
                     at_string.push_str(&s);
+
+                    if echo_command {
+                        if let Err(e) = mame.write_all(&buf[0..n]).await {
+                            log::error!("Error sending echoed text to MAME: error={e}");
+                            return;
+                        }
+                    }
                 }
 
                 let command_ready = buf[n - 1] == CCHAR_LINE_FEED || buf[n - 1] == CCHAR_CARRIAGE_RETURN;
@@ -479,6 +487,12 @@ async fn server_loop(start_cmd: &CmdOpts) -> Result<(), Box<dyn std::error::Erro
                         send_long_result = true;
                     } else if at_string.as_str().contains("V0") { // Verbose results off
                         send_long_result = false;
+                    }
+
+                    if at_string.as_str().contains("E1") { // echo mode on
+                        echo_command = true;
+                    } else if at_string.as_str().contains("E0") { // echo mode off
+                        echo_command = false;
                     }
 
                     if at_string.contains("I3") { // Firmware info (56k modems only)
