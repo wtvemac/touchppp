@@ -17,6 +17,10 @@ const BUFFER_SIZE: usize = 0x1000;
 const DEFAULT_IP: &'static str = "127.0.0.1";
 const WINCE_COMMAND_DELAY_MS: u64 = 1000;
 
+// The line feed and carriage return chars are used to mark the end of the command string and to begin parsing.
+const CCHAR_LINE_FEED: u8 = 0x0a;
+const CCHAR_CARRIAGE_RETURN: u8 = 0x0d;
+
 /// WebTV TouchPPP
 ///
 /// Provides a way for the WebTV MAME driver to talk with PPP using its null modem.
@@ -121,7 +125,7 @@ where
                     } else if at_string.contains("+++") {
                         log::info!("[{mame_socket_address}] Client requesting command mode with +++. Disconnecting and going back to command state.");
                         break 'conn;
-                    } else if at_string.len() >= 5 && buf[i] == 0x0d {
+                    } else if at_string.len() >= 5 && (buf[i] == CCHAR_LINE_FEED || buf[i] == CCHAR_CARRIAGE_RETURN) {
                         if at_string.starts_with("AT") {
                             log::info!("[{mame_socket_address}] AT command in PPP traffic detected. Disconnecting and going back to command state.");
                             break 'conn;
@@ -452,7 +456,8 @@ async fn server_loop(start_cmd: &CmdOpts) -> Result<(), Box<dyn std::error::Erro
                     at_string.push_str(&s);
                 }
 
-                if buf[n - 1] == 0x0d {
+                let command_ready = buf[n - 1] == CCHAR_LINE_FEED || buf[n - 1] == CCHAR_CARRIAGE_RETURN;
+                if command_ready && at_string != "" {
                     log::debug!("[{mame_socket_address}] {}", at_string.replace("\x0d", "").replace("\x0a", ""));
 
                     if at_string.as_str().contains("S51=31") { // Don't know the S51 register details but seems to be used to disable 56k, Rockwell modem doesn't understand this
