@@ -449,10 +449,11 @@ async fn server_loop(start_cmd: &CmdOpts) -> Result<(), Box<dyn std::error::Erro
             let mut is_webtvos = true;
             let mut send_long_result = true;
             let mut echo_command = true;
+            let mut loopback_test_mode = false;
 
             log::info!("Looks like we got a wild MAME @ {mame_socket_address}");
 
-            let mut at_string: String = "".to_string();
+            let mut string_buf: String = "".to_string();
 
             loop {
                 let n: usize = match mame.read(&mut buf).await {
@@ -466,53 +467,63 @@ async fn server_loop(start_cmd: &CmdOpts) -> Result<(), Box<dyn std::error::Erro
 
                 log::trace!("[<{mame_socket_address}] {:x?}", &buf[0..n]);
 
-                if buf[0] >= CCHARS_ALLOWED_MIN_CMD && buf[0] <= CCHARS_ALLOWED_MAX_CMD {
-                    let s = String::from_utf8_lossy(&buf[0..n]);
-
-                    at_string.push_str(&s);
-
-                    if echo_command {
-                        log::trace!("[>{mame_socket_address}] {:x?}", &buf[0..n]);
-                        if let Err(e) = mame.write_all(&buf[0..n]).await {
-                            log::error!("Error sending echoed text to MAME: error={e}");
-                            return;
-                        }
+                if echo_command || loopback_test_mode {
+                    log::trace!("[>{mame_socket_address}] {:x?}", &buf[0..n]);
+                    if let Err(e) = mame.write_all(&buf[0..n]).await {
+                        log::error!("Error sending echoed text to MAME: error={e}");
+                        return;
                     }
                 }
 
-                let command_ready = buf[n - 1] == CCHAR_LINE_FEED || buf[n - 1] == CCHAR_CARRIAGE_RETURN;
-                if command_ready && at_string != "" {
-                    log::debug!("[{mame_socket_address}] {}", at_string.replace("\x0d", "").replace("\x0a", ""));
+                if buf[0] >= CCHARS_ALLOWED_MIN_CMD && buf[0] <= CCHARS_ALLOWED_MAX_CMD {
+                    let s = String::from_utf8_lossy(&buf[0..n]);
 
-                    if at_string.as_str().contains("S51=31") { // Don't know the S51 register details but seems to be used to disable 56k, Rockwell modem doesn't understand this
+                    string_buf.push_str(&s);
+                }
+
+                let command_ready = buf[n - 1] == CCHAR_LINE_FEED || buf[n - 1] == CCHAR_CARRIAGE_RETURN;
+                let at_string: String = string_buf.replace("\x0d", "").replace("\x0a", "");
+                if !command_ready && at_string.contains("+++") {
+                    loopback_test_mode = false;
+                    string_buf = "".to_string();
+                    if let Err(e) = send_result(&mut mame, b"0", send_long_result, true).await { // OK
+                        log::error!("Can't talk to MAME: error={e}");
+                        return;
+                    }
+                } else if command_ready && !loopback_test_mode {
+                    if at_string != "" {
+                        log::debug!("[{mame_socket_address}] {}", at_string);
+                    }
+
+                    if at_string.contains("S51=31") { // Don't know the S51 register details but seems to be used to disable 56k, Rockwell modem doesn't understand this
                         log::info!("[{mame_socket_address}] Well... they want me to disable 56k (and think I'm a softmodem)");
                         is_56k_connect = false;
-                    } else if at_string.as_str().contains("+MS=11,1") { // Modulation select, 11,1 disables K56flex and V90
+                    } else if at_string.contains("+MS=11,1") { // Modulation select, 11,1 disables K56flex and V90
                         log::info!("[{mame_socket_address}] Well.. they want me to disable 56k (and think I'm a Rockwell hardmodem)");
                         is_56k_connect = false;
                     }
 
                     // Windows CE's Unimodem sends F0 at the start, while WebTV OS's TellyScripts does not.
                     // Only seen on LC2 WLD (Italian) boxes, the other WebTV Windows CE builds (UltimateTV) uses a softmodem.
-                    if at_string.as_str().contains("F0") {
+                    if at_string.contains("F0") {
                         log::info!("[{mame_socket_address}] Found what looks like Windows CE's Unimodem init string.");
                         is_webtvos = false;
                     }
 
-                    if at_string.as_str().contains("-STE") {
+                    if at_string.contains("-STE") {
                         log::info!("[{mame_socket_address}] Found what looks like MSNTV2 extension line string.");
                         is_webtvos = false;
                     }
 
-                    if at_string.as_str().contains("V1") { // Verbose results on
+                    if at_string.contains("V1") { // Verbose results on
                         send_long_result = true;
-                    } else if at_string.as_str().contains("V0") { // Verbose results off
+                    } else if at_string.contains("V0") { // Verbose results off
                         send_long_result = false;
                     }
 
-                    if at_string.as_str().contains("E1") { // echo mode on
+                    if at_string.contains("E1") { // echo mode on
                         echo_command = true;
-                    } else if at_string.as_str().contains("E0") { // echo mode off
+                    } else if at_string.contains("E0") { // echo mode off
                         echo_command = false;
                     }
 
@@ -531,6 +542,12 @@ async fn server_loop(start_cmd: &CmdOpts) -> Result<(), Box<dyn std::error::Erro
                         is_56k_modem = true;
                         is_56k_connect = true;
                         if let Err(e) = send_result(&mut mame, b"V69420_WEBTV-K56_DLP", false, true).await {
+                            log::error!("Can't talk to MAME: error={e}");
+                            return;
+                        }
+                    } else if at_string.contains("AT&T1") { // Analog loopback test
+                        loopback_test_mode = true;
+                        if let Err(e) = send_result(&mut mame, b"64", send_long_result, false).await { // CONNECT 28800
                             log::error!("Can't talk to MAME: error={e}");
                             return;
                         }
@@ -557,7 +574,7 @@ async fn server_loop(start_cmd: &CmdOpts) -> Result<(), Box<dyn std::error::Erro
                             }
                         }
                     // ATD standalone is the request to go into data mode.
-                    } else if at_string.contains("TD\x0d") { // ATD, go into data mode
+                    } else if at_string.ends_with("TD") { // ATD, go into data mode
                         if let Err(e) = send_webtvos_connection_result(&mut mame, is_56k_modem && is_56k_connect, send_long_result, false).await {
                             log::error!("Can't talk to MAME: error={e}");
                             return;
@@ -576,7 +593,8 @@ async fn server_loop(start_cmd: &CmdOpts) -> Result<(), Box<dyn std::error::Erro
                             return;
                         }
                     }
-                    at_string = "".to_string();
+
+                    string_buf = "".to_string();
                 }
             }
         });
