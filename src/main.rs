@@ -499,6 +499,11 @@ async fn server_loop(start_cmd: &CmdOpts) -> Result<(), Box<dyn std::error::Erro
                         is_webtvos = false;
                     }
 
+                    if at_string.as_str().contains("-STE") {
+                        log::info!("[{mame_socket_address}] Found what looks like MSNTV2 extension line string.");
+                        is_webtvos = false;
+                    }
+
                     if at_string.as_str().contains("V1") { // Verbose results on
                         send_long_result = true;
                     } else if at_string.as_str().contains("V0") { // Verbose results off
