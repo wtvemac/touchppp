@@ -516,7 +516,17 @@ async fn server_loop(start_cmd: &CmdOpts) -> Result<(), Box<dyn std::error::Erro
                         echo_command = false;
                     }
 
-                    if at_string.contains("I3") { // Firmware info (56k modems only)
+                    if at_string.contains("I0") { // Product id
+                        if let Err(e) = send_result(&mut mame, b"56000", false, false).await {
+                            log::error!("Can't talk to MAME: error={e}");
+                            return;
+                        }
+                    } else if at_string.contains("I2") { // Firmware ROM checksum verify
+                        if let Err(e) = send_result(&mut mame, b"0", send_long_result, false).await { // OK
+                            log::error!("Can't talk to MAME: error={e}");
+                            return;
+                        }
+                    } else if at_string.contains("I3") { // Firmware info (56k modems only)
                         log::info!("[{mame_socket_address}] They think we're a 56k modem so turning 56k on!");
                         is_56k_modem = true;
                         is_56k_connect = true;
