@@ -251,7 +251,10 @@ async fn start_ppp_loop(mame: &mut TcpStream, local_program_command: &String, pp
 }
 
 async fn send_result(mame: &mut TcpStream, short_code: &[u8], lookup_long_result: bool, leading_white_space: bool) -> Result<(), std::io::Error> {
+    let mame_socket_address = mame.peer_addr()?.to_string();
+
     if leading_white_space {
+        log::trace!("[>{mame_socket_address}] {:x?}", b"\x0d\x0a");
         if let Err(e) = mame.write_all(b"\x0d\x0a").await {
             return Err(e);
         }
@@ -349,15 +352,18 @@ async fn send_result(mame: &mut TcpStream, short_code: &[u8], lookup_long_result
             _ => b"OK"
         };
 
+        log::trace!("[>{mame_socket_address}] {:x?}", long_result);
         if let Err(e) = mame.write_all(long_result).await {
             return Err(e);
         }
     } else {
+        log::trace!("[>{mame_socket_address}] {:x?}", short_code);
         if let Err(e) = mame.write_all(short_code).await {
             return Err(e);
         }
     }
 
+    log::trace!("[>{mame_socket_address}] {:x?}", b"\x0d\x0a");
     if let Err(e) = mame.write_all(b"\x0d\x0a").await {
         return Err(e);
     }
@@ -466,6 +472,7 @@ async fn server_loop(start_cmd: &CmdOpts) -> Result<(), Box<dyn std::error::Erro
                     at_string.push_str(&s);
 
                     if echo_command {
+                        log::trace!("[>{mame_socket_address}] {:x?}", &buf[0..n]);
                         if let Err(e) = mame.write_all(&buf[0..n]).await {
                             log::error!("Error sending echoed text to MAME: error={e}");
                             return;
