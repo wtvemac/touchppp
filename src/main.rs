@@ -447,6 +447,7 @@ async fn server_loop(start_cmd: &CmdOpts) -> Result<(), Box<dyn std::error::Erro
             let mut is_56k_modem = false;
             let mut is_56k_connect = false;
             let mut is_webtvos = true;
+            let mut is_msntv2 = false;
             let mut send_long_result = true;
             let mut echo_command = true;
             let mut loopback_test_mode = false;
@@ -513,6 +514,9 @@ async fn server_loop(start_cmd: &CmdOpts) -> Result<(), Box<dyn std::error::Erro
                     if at_string.contains("-STE") {
                         log::info!("[{mame_socket_address}] Found what looks like MSNTV2 extension line string.");
                         is_webtvos = false;
+                        is_msntv2 = true;
+                        is_56k_modem = true;
+                        is_56k_connect = true;
                     }
 
                     if at_string.contains("V1") { // Verbose results on
@@ -537,6 +541,14 @@ async fn server_loop(start_cmd: &CmdOpts) -> Result<(), Box<dyn std::error::Erro
                             log::error!("Can't talk to MAME: error={e}");
                             return;
                         }
+                    } else if at_string.contains("ATZ") { // Modem reset
+                        send_long_result = true;
+                        echo_command = true;
+                        loopback_test_mode = false;
+                        if let Err(e) = send_result(&mut mame, b"0", send_long_result, true).await { // OK
+                            log::error!("Can't talk to MAME: error={e}");
+                            return;
+                        }
                     } else if at_string.contains("I3") { // Firmware info (56k modems only)
                         log::info!("[{mame_socket_address}] They think we're a 56k modem so turning 56k on!");
                         is_56k_modem = true;
@@ -557,7 +569,17 @@ async fn server_loop(start_cmd: &CmdOpts) -> Result<(), Box<dyn std::error::Erro
                             is_56k_connect = false;
                         }
 
-                        if !is_webtvos {
+                        if is_msntv2 {
+                            if let Err(e) = send_webtvos_connection_result(&mut mame, is_56k_modem && is_56k_connect, send_long_result, false).await {
+                                log::error!("Can't talk to MAME: error={e}");
+                                return;
+                            }
+
+                            if let Err(e) = start_ppp_loop(&mut mame, &local_program_command, &remote_socket_address).await {
+                                log::error!("Error in PPP loop: error={e}");
+                                return;
+                            }
+                        } else if !is_webtvos {
                             if let Err(e) = send_wince_connection_result(&mut mame, send_long_result, false).await {
                                 log::error!("Can't talk to MAME: error={e}");
                                 return;
