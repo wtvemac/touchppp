@@ -16,6 +16,7 @@ use std::{thread, time};
 const BUFFER_SIZE: usize = 0x1000;
 const DEFAULT_IP: &'static str = "127.0.0.1";
 const WINCE_COMMAND_DELAY_MS: u64 = 1000;
+const MSNTV2_DISCONNECT_DELAY_MS: u64 = 2000;
 
 // The line feed and carriage return chars are used to mark the end of the command string and to begin parsing.
 const CCHAR_LINE_FEED: u8 = 0x0a;
@@ -487,6 +488,11 @@ async fn server_loop(start_cmd: &CmdOpts) -> Result<(), Box<dyn std::error::Erro
                 if !command_ready && at_string.contains("+++") {
                     loopback_test_mode = false;
                     string_buf = "".to_string();
+
+                    if is_msntv2 {
+                        thread::sleep(time::Duration::from_millis(MSNTV2_DISCONNECT_DELAY_MS));
+                    }
+
                     if let Err(e) = send_result(&mut mame, b"0", send_long_result, true).await { // OK
                         log::error!("Can't talk to MAME: error={e}");
                         return;
@@ -577,6 +583,13 @@ async fn server_loop(start_cmd: &CmdOpts) -> Result<(), Box<dyn std::error::Erro
 
                             if let Err(e) = start_ppp_loop(&mut mame, &local_program_command, &remote_socket_address).await {
                                 log::error!("Error in PPP loop: error={e}");
+                                return;
+                            }
+
+                            thread::sleep(time::Duration::from_millis(MSNTV2_DISCONNECT_DELAY_MS));
+
+                            if let Err(e) = send_result(&mut mame, b"0", send_long_result, false).await { // OK
+                                log::error!("Can't talk to MAME: error={e}");
                                 return;
                             }
                         } else if !is_webtvos {
