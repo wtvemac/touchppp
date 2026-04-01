@@ -136,7 +136,7 @@ where
                         log::info!("[{mame_socket_address}] Client requesting command mode with +++. Disconnecting and going back to command state.");
                         break 'conn;
                     } else if at_string.len() >= 5 && (buf[i] == CCHAR_LINE_FEED || buf[i] == CCHAR_CARRIAGE_RETURN) {
-                        if at_string.starts_with("AT") {
+                        if at_string.starts_with("AT") && !at_string.contains(" ") {
                             log::info!("[{mame_socket_address}] AT command in PPP traffic detected. Disconnecting and going back to command state.");
                             break 'conn;
                         }
